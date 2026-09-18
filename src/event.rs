@@ -51,7 +51,8 @@ pub enum Event {
     Resize(Size),
     Mouse(MouseEvent),
     Paste(PasteEvent),
-    /// An incomplete escape sequence that exceeded the sequence timeout.
+    /// An unknown, malformed, or timed-out sequence. Oversized sequences are
+    /// emitted in chunks of at most 64 bytes, never as ordinary text.
     UnknownSequence(Vec<u8>),
 }
 
@@ -68,11 +69,14 @@ enum ParseState {
     Csi,
     Ss3,
     Registered,
+    DiscardSequence,
     Paste,
 }
 
 enum RegisteredMatch {
     Complete(Key, usize),
+    CompletePrefix(Key, usize),
+    Conflict(usize),
     Prefix,
     None,
 }
@@ -100,6 +104,10 @@ impl InputParser {
     pub fn mode(&self) -> InputMode {
         self.mode
     }
+    /// Register an escape sequence of at most 64 bytes. Longest matches win;
+    /// ambiguous complete prefixes wait for more input or an explicit finish.
+    /// Conflicting identical registrations are treated as unknown, independent
+    /// of registration order. Repeating the same registration is harmless.
     pub fn add_key_sequence(&mut self, bytes: &[u8], key: Key) {
         if !bytes.is_empty() && bytes.len() <= MAX_SEQUENCE {
             self.key_caps.push((bytes.to_vec(), key));
@@ -115,12 +123,23 @@ impl InputParser {
     pub fn pending_sequence(&self) -> bool {
         matches!(
             self.state,
-            ParseState::Csi | ParseState::Ss3 | ParseState::Registered
+            ParseState::Csi
+                | ParseState::Ss3
+                | ParseState::Registered
+                | ParseState::DiscardSequence
         )
     }
     pub fn finish_incomplete_sequence(&mut self) -> Option<Event> {
         if !self.pending_sequence() {
             return None;
+        }
+        if let RegisteredMatch::Complete(key, len) | RegisteredMatch::CompletePrefix(key, len) =
+            self.match_registered()
+        {
+            self.drain(len);
+            self.state = ParseState::Ground;
+            self.registered_prefix_len = 0;
+            return Some(Event::Key(KeyEvent::new(key, Modifiers::NONE)));
         }
         self.state = ParseState::Ground;
         let count = if self.registered_prefix_len > 0 {
@@ -129,7 +148,7 @@ impl InputParser {
             self.bytes.len().min(MAX_SEQUENCE)
         };
         self.registered_prefix_len = 0;
-        Some(Event::UnknownSequence(self.bytes.drain(..count).collect()))
+        (count > 0).then(|| Event::UnknownSequence(self.bytes.drain(..count).collect()))
     }
     /// Resolve a lone ESC after the caller's inter-byte grace period.
     pub fn finish_escape(&mut self) -> Option<Event> {
@@ -142,6 +161,15 @@ impl InputParser {
     }
     pub fn next_event(&mut self) -> Option<Event> {
         loop {
+            if self.state == ParseState::DiscardSequence {
+                if let Some(event) = self.discard_sequence() {
+                    return Some(event);
+                }
+                if self.state == ParseState::DiscardSequence {
+                    return None;
+                }
+                continue;
+            }
             if self.state == ParseState::Paste {
                 return self.parse_paste();
             }
@@ -161,13 +189,18 @@ impl InputParser {
                     return None;
                 }
                 match self.match_registered() {
+                    RegisteredMatch::Conflict(len) => {
+                        self.state = ParseState::Ground;
+                        self.registered_prefix_len = 0;
+                        return Some(Event::UnknownSequence(self.bytes.drain(..len).collect()));
+                    }
                     RegisteredMatch::Complete(key, len) => {
                         self.drain(len);
                         self.registered_prefix_len = 0;
                         self.state = ParseState::Ground;
                         return Some(Event::Key(KeyEvent::new(key, Modifiers::NONE)));
                     }
-                    RegisteredMatch::Prefix => {
+                    RegisteredMatch::Prefix | RegisteredMatch::CompletePrefix(_, _) => {
                         self.registered_prefix_len = self.bytes.len();
                         self.state = ParseState::Registered;
                         return None;
@@ -188,7 +221,9 @@ impl InputParser {
                     };
                     let before = self.bytes.len();
                     if let Some(event) = self.parse_escape_sequence() {
-                        self.state = ParseState::Ground;
+                        if self.state != ParseState::DiscardSequence {
+                            self.state = ParseState::Ground;
+                        }
                         return Some(event);
                     }
                     if self.bytes.len() < before {
@@ -235,6 +270,8 @@ impl InputParser {
     }
     fn match_registered(&self) -> RegisteredMatch {
         let mut prefix = false;
+        let mut complete = None;
+        let mut conflict = false;
         for (seq, key) in &self.key_caps {
             if self.bytes.len() >= seq.len()
                 && self
@@ -244,7 +281,13 @@ impl InputParser {
                     .copied()
                     .eq(seq.iter().copied())
             {
-                return RegisteredMatch::Complete(*key, seq.len());
+                match complete {
+                    None => complete = Some((*key, seq.len())),
+                    Some((previous, len)) if len == seq.len() && previous != *key => {
+                        conflict = true
+                    }
+                    _ => {}
+                }
             }
             if self.bytes.len() < seq.len()
                 && self
@@ -256,11 +299,39 @@ impl InputParser {
                 prefix = true;
             }
         }
-        if prefix {
+        if conflict {
+            return if prefix {
+                RegisteredMatch::Prefix
+            } else {
+                RegisteredMatch::Conflict(complete.expect("conflict requires a match").1)
+            };
+        }
+        if let Some((key, len)) = complete {
+            if prefix {
+                RegisteredMatch::CompletePrefix(key, len)
+            } else {
+                RegisteredMatch::Complete(key, len)
+            }
+        } else if prefix {
             RegisteredMatch::Prefix
         } else {
             RegisteredMatch::None
         }
+    }
+    fn discard_sequence(&mut self) -> Option<Event> {
+        let mut count = 0;
+        for &byte in self.bytes.iter().take(MAX_SEQUENCE) {
+            if !(0x20..=0x7e).contains(&byte) {
+                self.state = ParseState::Ground;
+                break; // Keep ESC, controls and UTF-8 input for the next event.
+            }
+            count += 1;
+            if (0x40..=0x7e).contains(&byte) {
+                self.state = ParseState::Ground;
+                break;
+            }
+        }
+        (count > 0).then(|| Event::UnknownSequence(self.bytes.drain(..count).collect()))
     }
     fn parse_paste(&mut self) -> Option<Event> {
         let bytes: Vec<u8> = self.bytes.iter().copied().collect();
@@ -322,18 +393,32 @@ impl InputParser {
                 b'A'..=b'E' => Some(Key::Function(self.bytes[3] - b'A' + 1)),
                 _ => None,
             };
-            self.drain(4);
-            return key.map(|key| Event::Key(KeyEvent::new(key, Modifiers::NONE)));
+            let bytes = self.bytes.drain(..4).collect();
+            return Some(match key {
+                Some(key) => Event::Key(KeyEvent::new(key, Modifiers::NONE)),
+                None => Event::UnknownSequence(bytes),
+            });
         }
         let end = (2..self.bytes.len().min(MAX_SEQUENCE + 1))
-            .find(|&i| (0x40..=0x7e).contains(&self.bytes[i]));
+            .find(|&i| !(0x20..=0x3f).contains(&self.bytes[i]));
         let Some(end) = end else {
             if self.bytes.len() > MAX_SEQUENCE {
-                self.bytes.pop_front();
-                return self.finish_escape();
+                self.state = ParseState::DiscardSequence;
+                return Some(Event::UnknownSequence(
+                    self.bytes.drain(..MAX_SEQUENCE).collect(),
+                ));
             }
             return None;
         };
+        if !(0x40..=0x7e).contains(&self.bytes[end]) {
+            return Some(Event::UnknownSequence(self.bytes.drain(..end).collect()));
+        }
+        if end >= MAX_SEQUENCE {
+            self.state = ParseState::DiscardSequence;
+            return Some(Event::UnknownSequence(
+                self.bytes.drain(..MAX_SEQUENCE).collect(),
+            ));
+        }
         let seq: Vec<u8> = self.bytes.iter().take(end + 1).copied().collect();
         let params = &seq[2..end];
         let final_byte = seq[end];
@@ -343,9 +428,11 @@ impl InputParser {
             && (params.first() == Some(&b'<') || params.contains(&b';'))
         {
             let sgr = params.first() == Some(&b'<');
-            let numbers = parse_numbers(if sgr { &params[1..] } else { params })?;
+            let Some(numbers) = parse_numbers(if sgr { &params[1..] } else { params }) else {
+                return Some(Event::UnknownSequence(seq));
+            };
             if numbers.len() != 3 {
-                return self.next_event();
+                return Some(Event::UnknownSequence(seq));
             }
             let b = if sgr {
                 u32::from(numbers[0])
@@ -362,7 +449,10 @@ impl InputParser {
         let numbers = if params.is_empty() {
             Vec::new()
         } else {
-            parse_numbers(params)?
+            match parse_numbers(params) {
+                Some(numbers) => numbers,
+                None => return Some(Event::UnknownSequence(seq)),
+            }
         };
         let key = if is_csi {
             match final_byte {
@@ -400,7 +490,9 @@ impl InputParser {
                 _ => None,
             }
         };
-        let key = key?;
+        let Some(key) = key else {
+            return Some(Event::UnknownSequence(seq));
+        };
         let code = numbers.get(1).copied().unwrap_or(1).saturating_sub(1);
         let mut mods = Modifiers::NONE;
         if code & 1 != 0 || key == Key::BackTab {

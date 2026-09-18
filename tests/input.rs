@@ -136,6 +136,10 @@ fn incomplete_and_malformed() {
     p.feed(b"\x1b[1;?Aq");
     assert_eq!(
         p.next_event(),
+        Some(Event::UnknownSequence(b"\x1b[1;?A".to_vec()))
+    );
+    assert_eq!(
+        p.next_event(),
         Some(Event::Key(KeyEvent::new(Key::Char('q'), Modifiers::NONE)))
     );
 }

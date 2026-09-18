@@ -14,6 +14,6 @@
 | Built-in terminal models | Supported | Used when a matching compiled entry is unavailable |
 | Controlling terminal connection | Unix | `Terminal::new()` opens `/dev/tty` |
 | Explicit stdio or owned descriptors | Unix | `from_stdio()`, `from_fds()`, `from_tty_path()` |
-| Native Windows console backend | Validation pending | Builds and unit tests cross-check; real-console test results are required for release |
+| Native Windows console backend | Tested on Windows 11 x64 | Native API checks passed in Windows Terminal and classic Console Host; see [validation report](WINDOWS_VALIDATION.md) for scope and remaining manual checks |
 
 The API is synchronous. `InputParser` is available independently of a terminal for protocol decoding and tests. The terminfo evaluator deliberately supports the operations needed by consumed capabilities; unsupported expressions return an error. Terminal output assumes VT-style colour sequences. There is no widget or layout layer.

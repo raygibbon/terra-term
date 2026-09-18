@@ -28,6 +28,7 @@ pub struct Terminal {
     sequence_since: Option<Instant>,
     suspended: bool,
     cursor: Option<Position>,
+    last_cursor: Position,
     clear_style: Style,
     mouse_enabled: bool,
     caps: Capabilities,
@@ -80,6 +81,7 @@ impl Terminal {
             sequence_since: None,
             suspended: false,
             cursor: None,
+            last_cursor: Position::default(),
             clear_style: Style::default(),
             mouse_enabled: false,
             caps,
@@ -108,14 +110,14 @@ impl Terminal {
     }
     /// Clear the physical screen and force the next `present` to redraw it.
     pub fn clear_screen(&mut self) -> io::Result<()> {
-        self.backend.clear_screen()?;
         self.invalid = true;
+        self.backend.clear_screen()?;
         Ok(())
     }
     /// Send bytes directly to the terminal. The next presentation repaints the screen.
     pub fn send_raw(&mut self, bytes: &[u8]) -> io::Result<()> {
-        self.backend.write(bytes)?;
         self.invalid = true;
+        self.backend.write(bytes)?;
         Ok(())
     }
     pub fn put_cell(&mut self, x: u16, y: u16, cell: Cell) {
@@ -144,13 +146,17 @@ impl Terminal {
         self.invalid = true;
     }
     pub fn show_cursor(&mut self) {
-        self.cursor.get_or_insert(Position::default());
+        self.cursor.get_or_insert(self.last_cursor);
     }
     pub fn hide_cursor(&mut self) {
+        if let Some(position) = self.cursor {
+            self.last_cursor = position;
+        }
         self.cursor = None;
     }
     pub fn set_cursor(&mut self, x: u16, y: u16) {
-        self.cursor = Some(Position { x, y });
+        self.last_cursor = Position { x, y };
+        self.cursor = Some(self.last_cursor);
     }
     pub fn cursor(&self) -> Option<Position> {
         self.cursor
@@ -327,7 +333,10 @@ impl Terminal {
         }
         out.extend_from_slice(&self.caps.reset);
         append_cursor(&mut out, self.cursor, &self.caps)?;
-        self.backend.write(&out)?;
+        if let Err(error) = self.backend.write(&out) {
+            self.invalid = true;
+            return Err(error);
+        }
         self.front.clone_from(&self.back.cells);
         self.invalid = false;
         Ok(())

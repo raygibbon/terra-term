@@ -7,7 +7,7 @@
 //! [`Terminal::read_event_timeout`], or [`Terminal::try_event`].
 //!
 //! On Unix, [`Terminal::new`] opens the controlling terminal. Applications that
-//! want process standard streams can use [`Terminal::from_stdio`].
+//! want process standard streams can use `Terminal::from_stdio` (Unix only).
 //!
 //! ```no_run
 //! use terra_term::{Event, Key, Style, Terminal};

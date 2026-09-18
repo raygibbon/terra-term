@@ -1,0 +1,82 @@
+{
+  "Date": "2026-09-18T09:19:53.9191937+09:30",
+  "Toolchain": "stable-x86_64-pc-windows-msvc",
+  "Results": [
+    {
+      "Command": "cargo fmt --check",
+      "ExitCode": 0,
+      "Log": "target\\windows-validation-fmt-check.log"
+    },
+    {
+      "Command": "cargo check --all-targets",
+      "ExitCode": 0,
+      "Log": "target\\windows-validation-check-all-targets.log"
+    },
+    {
+      "Command": "cargo test --all-targets",
+      "ExitCode": 0,
+      "Log": "target\\windows-validation-test-all-targets.log"
+    },
+    {
+      "Command": "cargo clippy --all-targets -- -D warnings",
+      "ExitCode": 0,
+      "Log": "target\\windows-validation-clippy-all-targets-D-warnings.log"
+    },
+    {
+      "Command": "cargo doc --no-deps",
+      "ExitCode": 0,
+      "Log": "target\\windows-validation-doc-no-deps.log"
+    },
+    {
+      "Command": "cargo test --doc",
+      "ExitCode": 0,
+      "Log": "target\\windows-validation-test-doc.log"
+    },
+    {
+      "Command": "cargo build --release",
+      "ExitCode": 0,
+      "Log": "target\\windows-validation-build-release.log"
+    },
+    {
+      "Command": "cargo package",
+      "ExitCode": 101,
+      "Log": "target\\windows-validation-package.log"
+    },
+    {
+      "Command": "cargo package --allow-dirty",
+      "ExitCode": 0,
+      "Log": "target\\windows-validation-package-allow-dirty.log"
+    },
+    {
+      "Command": "cargo --config net.offline=false publish --dry-run --allow-dirty",
+      "ExitCode": 0,
+      "Log": "target\\windows-validation-publish.log"
+    }
+  ],
+  "ConsoleHosts": [
+    {
+      "Host": "windows-terminal-test",
+      "Result": "PASS",
+      "Environment": {
+        "Date": "2026-09-18T09:19:54.0280508+09:30",
+        "Windows": "Microsoft Windows NT 10.0.26200.0",
+        "Architecture": "AMD64",
+        "Shell": "PowerShell 7.6.6",
+        "WindowsTerminalSession": "a39c8beb-5e53-4ae9-8117-b20b05233a7b",
+        "TestExecutable": "C:\\Users\\raygi\\Sync\\git\\terra-term\\target\\debug\\deps\\terra_term-7bd800786d043ebc.exe"
+      }
+    },
+    {
+      "Host": "classic-console-test",
+      "Result": "PASS",
+      "Environment": {
+        "Date": "2026-09-18T09:19:54.9681698+09:30",
+        "Windows": "Microsoft Windows NT 10.0.26200.0",
+        "Architecture": "AMD64",
+        "Shell": "PowerShell 7.6.6",
+        "WindowsTerminalSession": null,
+        "TestExecutable": "C:\\Users\\raygi\\Sync\\git\\terra-term\\target\\debug\\deps\\terra_term-7bd800786d043ebc.exe"
+      }
+    }
+  ]
+}

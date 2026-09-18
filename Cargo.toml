@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 description = "A small, low-level, cell-oriented terminal library written in Rust"
+repository = "https://github.com/raygibbon/terra-term"
 readme = "README.md"
 keywords = ["terminal", "tui", "console", "ansi"]
 categories = ["command-line-interface"]
-exclude = ["/fuzz", "/.github"]
+exclude = ["/fuzz", "/.github", "/tools", "/docs/windows-validation-results.json"]
 
 [dependencies]
 unicode-width = "0.2"
