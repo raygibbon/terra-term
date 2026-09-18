@@ -8,7 +8,7 @@ repository = "https://github.com/raygibbon/terra-term"
 readme = "README.md"
 keywords = ["terminal", "tui", "console", "ansi"]
 categories = ["command-line-interface"]
-exclude = ["/fuzz", "/.github", "/tools", "/docs/windows-validation-results.json"]
+exclude = ["/fuzz", "/.github", "/.gitignore", "/tools", "/docs/windows-validation-results.json"]
 
 [dependencies]
 unicode-width = "0.2"

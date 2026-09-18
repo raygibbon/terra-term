@@ -176,6 +176,7 @@ fn console_checks() {
     keyboard_checks(&mut backend);
     regressions::keyboard_and_unicode(&mut backend);
     // Alternate-screen entry can generate a native resize record.
+    // SAFETY: the dedicated test process owns this console input handle.
     unsafe {
         assert_ne!(FlushConsoleInputBuffer(input_handle), 0);
     }
@@ -331,6 +332,7 @@ fn console_checks() {
         (screen.dwCursorPosition.X, screen.dwCursorPosition.Y),
         (4, 2)
     );
+    // SAFETY: discard only setup records from the dedicated test input queue.
     unsafe {
         assert_ne!(FlushConsoleInputBuffer(input_handle), 0);
     }
@@ -423,16 +425,19 @@ fn console_checks() {
         assert_ne!(SetStdHandle(STD_OUTPUT_HANDLE, input_handle), 0);
     }
     assert!(Backend::new(caps.clone()).is_err());
+    // SAFETY: restore the still-open output file as this process's standard handle.
     unsafe {
         assert_ne!(SetStdHandle(STD_OUTPUT_HANDLE, output_handle), 0);
     }
     restored();
     // Fail screen entry after mode changes with a read-only console output handle.
     let readonly = OpenOptions::new().read(true).open("CONOUT$").unwrap();
+    // SAFETY: readonly stays alive until after this temporary standard-handle use.
     unsafe {
         assert_ne!(SetStdHandle(STD_OUTPUT_HANDLE, readonly.as_raw_handle()), 0);
     }
     assert!(Backend::new(caps.clone()).is_err());
+    // SAFETY: restore the still-open output file after the expected setup failure.
     unsafe {
         assert_ne!(SetStdHandle(STD_OUTPUT_HANDLE, output_handle), 0);
     }
@@ -519,7 +524,7 @@ fn keyboard_checks(backend: &mut Backend) {
 
 #[test]
 fn mouse_transitions_and_viewport() {
-    let mut state = 0;
+    let mut state = MouseState::default();
     let window = SMALL_RECT {
         Left: 10,
         Top: 20,
@@ -550,8 +555,8 @@ fn mouse_transitions_and_viewport() {
     for (flag, delta, button) in [
         (MOUSE_WHEELED, 120i16, MouseButton::WheelUp),
         (MOUSE_WHEELED, -120, MouseButton::WheelDown),
-        (MOUSE_HWHEELED, 120, MouseButton::Other(5)),
-        (MOUSE_HWHEELED, -120, MouseButton::Other(4)),
+        (MOUSE_HWHEELED, 120, MouseButton::WheelRight),
+        (MOUSE_HWHEELED, -120, MouseButton::WheelLeft),
     ] {
         rec.dwEventFlags = flag;
         rec.dwButtonState = u32::from(delta as u16) << 16;

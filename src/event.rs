@@ -11,11 +11,18 @@ pub enum InputMode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MouseButton {
+    /// Motion or a legacy release with no identified button.
+    None,
     Left,
     Middle,
     Right,
     WheelUp,
     WheelDown,
+    WheelLeft,
+    WheelRight,
+    Back,
+    Forward,
+    /// A button without a standard semantic identity.
     Other(u8),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,6 +35,9 @@ pub enum MouseKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MouseEvent {
     pub position: Position,
+    /// Scroll direction, the changed/held button, or `MouseButton::None`.
+    /// Each scroll event represents one notch. Native Windows partial wheel
+    /// deltas accumulate per axis; larger deltas emit multiple events.
     pub button: MouseButton,
     pub kind: MouseKind,
     pub modifiers: Modifiers,
@@ -569,10 +579,12 @@ fn mouse(b: u32, x: u16, y: u16, release: bool) -> MouseEvent {
     let button = match b & 3 {
         0 if b & 64 != 0 => MouseButton::WheelUp,
         1 if b & 64 != 0 => MouseButton::WheelDown,
+        2 if b & 64 != 0 => MouseButton::WheelLeft,
+        3 if b & 64 != 0 => MouseButton::WheelRight,
         0 => MouseButton::Left,
         1 => MouseButton::Middle,
         2 => MouseButton::Right,
-        _ => MouseButton::Other(3),
+        _ => MouseButton::None,
     };
     let kind = if b & 64 != 0 {
         MouseKind::Scroll

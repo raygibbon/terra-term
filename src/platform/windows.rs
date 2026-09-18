@@ -31,7 +31,7 @@ pub(crate) struct Backend {
     pending: VecDeque<Event>,
     repeated: Option<(Event, u16)>,
     high_surrogate: Option<(u16, Modifiers, u16)>,
-    mouse_buttons: u32,
+    mouse_state: MouseState,
     caps: Capabilities,
 }
 // Console modes and code pages are shared even through duplicated handles.
@@ -82,58 +82,58 @@ impl Drop for ConsoleLease {
 impl Backend {
     pub fn new(caps: Capabilities) -> io::Result<Self> {
         let lease = ConsoleLease::acquire()?;
-        // SAFETY: process standard handles and console queries have valid output pointers.
-        unsafe {
-            let input = GetStdHandle(STD_INPUT_HANDLE);
-            let output = GetStdHandle(STD_OUTPUT_HANDLE);
-            if input.is_null()
-                || output.is_null()
-                || input == INVALID_HANDLE_VALUE
-                || output == INVALID_HANDLE_VALUE
-            {
-                return Err(io::Error::other("a Windows console is required"));
-            }
-            let (mut input_mode, mut output_mode) = (0, 0);
-            if GetConsoleMode(input, &mut input_mode) == 0
-                || GetConsoleMode(output, &mut output_mode) == 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            let mut cursor = CONSOLE_CURSOR_INFO::default();
-            if GetConsoleCursorInfo(output, &mut cursor) == 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let input_owner = BorrowedHandle::borrow_raw(input).try_clone_to_owned()?;
-            let output_owner = BorrowedHandle::borrow_raw(output).try_clone_to_owned()?;
-            let input_cp = GetConsoleCP();
-            let output_cp = GetConsoleOutputCP();
-            if input_cp == 0 || output_cp == 0 {
-                return Err(io::Error::other("console code pages are unavailable"));
-            }
-            let mut backend = Self {
-                input: input_owner.as_raw_handle(),
-                output: output_owner.as_raw_handle(),
-                _input_owner: input_owner,
-                _output_owner: output_owner,
-                _lease: lease,
-                input_mode,
-                output_mode,
-                output_cp,
-                cursor,
-                active: false,
-                needs_restore: false,
-                vt_ready: false,
-                ctrl_handler: false,
-                mouse_enabled: false,
-                pending: VecDeque::new(),
-                repeated: None,
-                high_surrogate: None,
-                mouse_buttons: 0,
-                caps,
-            };
-            backend.resume()?;
-            Ok(backend)
+        // SAFETY: these queries take valid standard-handle identifiers.
+        let input = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+        // SAFETY: same as above; null and invalid results are checked below.
+        let output = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+        if input.is_null()
+            || output.is_null()
+            || input == INVALID_HANDLE_VALUE
+            || output == INVALID_HANDLE_VALUE
+        {
+            return Err(io::Error::other("a Windows console is required"));
         }
+        let (mut input_mode, mut output_mode) = (0, 0);
+        // SAFETY: pointers refer to initialized writable u32 values.
+        win32_result(unsafe { GetConsoleMode(input, &mut input_mode) })?;
+        // SAFETY: output was checked above; the query also validates console access.
+        win32_result(unsafe { GetConsoleMode(output, &mut output_mode) })?;
+        let mut cursor = CONSOLE_CURSOR_INFO::default();
+        // SAFETY: cursor is initialized and writable; output is a console handle.
+        win32_result(unsafe { GetConsoleCursorInfo(output, &mut cursor) })?;
+        // SAFETY: successful console queries establish valid standard handles.
+        // Borrow only for duplication; never take ownership of the originals.
+        let input_owner = unsafe { BorrowedHandle::borrow_raw(input) }.try_clone_to_owned()?;
+        // SAFETY: same checked lifetime as input; the clone owns its new handle.
+        let output_owner = unsafe { BorrowedHandle::borrow_raw(output) }.try_clone_to_owned()?;
+        // SAFETY: attached-console query has no pointer arguments.
+        let output_cp = unsafe { GetConsoleOutputCP() };
+        if output_cp == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut backend = Self {
+            input: input_owner.as_raw_handle(),
+            output: output_owner.as_raw_handle(),
+            _input_owner: input_owner,
+            _output_owner: output_owner,
+            _lease: lease,
+            input_mode,
+            output_mode,
+            output_cp,
+            cursor,
+            active: false,
+            needs_restore: false,
+            vt_ready: false,
+            ctrl_handler: false,
+            mouse_enabled: false,
+            pending: VecDeque::new(),
+            repeated: None,
+            high_surrogate: None,
+            mouse_state: MouseState::default(),
+            caps,
+        };
+        backend.resume()?;
+        Ok(backend)
     }
     pub fn is_active(&self) -> bool {
         self.active
@@ -214,7 +214,7 @@ impl Backend {
                         return Err(io::Error::last_os_error());
                     }
                     self.pending.extend(
-                        mouse_events(mouse, &mut self.mouse_buttons, info.srWindow)
+                        mouse_events(mouse, &mut self.mouse_state, info.srWindow)
                             .into_iter()
                             .map(Event::Mouse),
                     );
@@ -379,7 +379,7 @@ impl Backend {
             self.pending.clear();
             self.repeated = None;
             self.high_surrogate = None;
-            self.mouse_buttons = 0;
+            self.mouse_state = MouseState::default();
         }
         output?;
         if let Some(error) = restore_error {
@@ -472,7 +472,7 @@ impl Backend {
                 return Err(io::Error::last_os_error());
             }
         }
-        self.mouse_buttons = 0;
+        self.mouse_state = MouseState::default();
         self.mouse_enabled = enabled;
         Ok(())
     }
@@ -514,21 +514,26 @@ fn win_modifiers(state: u32) -> Modifiers {
     }
     mods
 }
+#[derive(Default)]
+struct MouseState {
+    buttons: u32,
+    wheel: [i32; 2],
+}
 fn mouse_events(
     rec: MOUSE_EVENT_RECORD,
-    previous: &mut u32,
+    state: &mut MouseState,
     window: SMALL_RECT,
 ) -> Vec<MouseEvent> {
     let buttons = [
         (FROM_LEFT_1ST_BUTTON_PRESSED, MouseButton::Left),
         (RIGHTMOST_BUTTON_PRESSED, MouseButton::Right),
         (FROM_LEFT_2ND_BUTTON_PRESSED, MouseButton::Middle),
-        (FROM_LEFT_3RD_BUTTON_PRESSED, MouseButton::Other(0)),
-        (FROM_LEFT_4TH_BUTTON_PRESSED, MouseButton::Other(1)),
+        (FROM_LEFT_3RD_BUTTON_PRESSED, MouseButton::Back),
+        (FROM_LEFT_4TH_BUTTON_PRESSED, MouseButton::Forward),
     ];
     let current = rec.dwButtonState & 0x1f;
-    let changed = *previous ^ current;
-    *previous = current;
+    let changed = state.buttons ^ current;
+    state.buttons = current;
     let event = |button, kind| MouseEvent {
         position: Position {
             x: (i32::from(rec.dwMousePosition.X) - i32::from(window.Left)).max(0) as u16,
@@ -540,16 +545,23 @@ fn mouse_events(
     };
     if rec.dwEventFlags == MOUSE_WHEELED || rec.dwEventFlags == MOUSE_HWHEELED {
         let delta = (rec.dwButtonState >> 16) as i16;
-        if delta == 0 {
+        let horizontal = rec.dwEventFlags == MOUSE_HWHEELED;
+        let remainder = &mut state.wheel[usize::from(horizontal)];
+        *remainder += i32::from(delta);
+        let notches = *remainder / 120;
+        *remainder %= 120;
+        if notches == 0 {
             return Vec::new();
         }
-        let button = match (rec.dwEventFlags == MOUSE_HWHEELED, delta > 0) {
+        let button = match (horizontal, notches > 0) {
             (false, true) => MouseButton::WheelUp,
             (false, false) => MouseButton::WheelDown,
-            (true, true) => MouseButton::Other(5), // horizontal right
-            (true, false) => MouseButton::Other(4), // horizontal left
+            (true, true) => MouseButton::WheelRight,
+            (true, false) => MouseButton::WheelLeft,
         };
-        return vec![event(button, MouseKind::Scroll)];
+        // A native delta is i16 and the remainder is below one notch, so this
+        // allocation is bounded to at most 274 events even for malformed input.
+        return vec![event(button, MouseKind::Scroll); notches.unsigned_abs() as usize];
     }
     let mut events = Vec::new();
     // Report each changed button, including releases while another remains down.
@@ -569,7 +581,7 @@ fn mouse_events(
         let button = buttons
             .into_iter()
             .find(|(mask, _)| current & mask != 0)
-            .map_or(MouseButton::Other(3), |(_, button)| button);
+            .map_or(MouseButton::None, |(_, button)| button);
         events.push(event(button, MouseKind::Move));
     }
     events

@@ -315,7 +315,7 @@ pub(super) fn lifecycle_and_failures(caps: &Capabilities, input: HANDLE, output:
         main_screen_restored();
         drop(Backend::new(caps.clone()).unwrap()); // lease was released
     }
-    for _ in 0..20 {
+    for _ in 0..100 {
         let mut backend = Backend::new(caps.clone()).unwrap();
         backend.write(b"ALTERNATE SCREEN CONTENTS").unwrap();
         for _ in 0..3 {
@@ -334,7 +334,14 @@ pub(super) fn lifecycle_and_failures(caps: &Capabilities, input: HANDLE, output:
     assert_eq!(handles(), baseline, "duplicated handles leaked");
 
     let mut backend = Backend::new(caps.clone()).unwrap();
+    backend.set_mouse(true).unwrap();
     backend.suspend().unwrap();
+    FAIL_AFTER.with(|failure| failure.set(Some("mouse")));
+    let resumed = backend.resume();
+    FAIL_AFTER.with(|failure| failure.set(None));
+    assert!(resumed.is_err());
+    assert_eq!((mode(input), mode(output)), initial_modes);
+    assert!(!backend.active && !backend.needs_restore);
     let saved_output = backend.output;
     backend.output = std::ptr::null_mut();
     assert!(backend.resume().is_err()); // code page/input mode changed before output failure
@@ -393,7 +400,7 @@ fn all_mouse_button_transitions() {
         (3, 1, vec![(MouseButton::Right, MouseKind::Release)]),
         (3, 3, vec![]),
     ] {
-        let mut previous = from;
+        let mut previous = MouseState { buttons: from, ..Default::default() };
         let events = mouse_events(
             MOUSE_EVENT_RECORD {
                 dwButtonState: to,
@@ -409,7 +416,7 @@ fn all_mouse_button_transitions() {
                 .collect::<Vec<_>>(),
             changes
         );
-        assert_eq!(previous, to);
+        assert_eq!(previous.buttons, to);
     }
 }
 
@@ -436,7 +443,7 @@ fn mouse_edges_resized_viewports_drag_and_wheels() {
                 (MOUSE_WHEELED, 120 << 16, MouseKind::Scroll),
                 (MOUSE_HWHEELED, 120 << 16, MouseKind::Scroll),
             ] {
-                let mut state = buttons & 0x1f;
+                let mut state = MouseState { buttons: buttons & 0x1f, ..Default::default() };
                 let events = mouse_events(
                     MOUSE_EVENT_RECORD {
                         dwMousePosition: COORD { X: x, Y: y },
@@ -460,7 +467,7 @@ fn mouse_edges_resized_viewports_drag_and_wheels() {
                     assert_eq!(
                         events[0].button,
                         if buttons == 0 {
-                            MouseButton::Other(3)
+                            MouseButton::None
                         } else {
                             MouseButton::Left
                         }
